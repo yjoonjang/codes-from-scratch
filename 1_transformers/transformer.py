@@ -170,11 +170,94 @@ class Transformer(Module):
     @staticmethod
     def generate_square_subsequent_mask(
         sz: int,
-        device:
-    )
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+    ) -> Tensor:
+        return _generate_square_subsequent_mask(sz, dtype=dtype, device=device)
+    
+    def _reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                xavier_uniform_(p)
 
 class TransformerEncoder(Module):
-    pass
+    __constants__=["norm"]
+    def __init__(
+        self,
+        encoder_layer: "TransformerEncoderLayer",
+        num_layers: int,
+        norm: Optional[Module] = None,
+        enable_nested_tensor: bool = True,
+        mask_check: bool = True
+    ) -> None:
+        super().__init__()
+        torch._C._log_api_usage_once(f"torch.nn.modules.{self.__class__.__name__}")
+        self.layers = _get_clones(encoder_layer, num_layers)
+        self.num_layers = num_layers
+        self.norm = norm
+        self.enable_nested_tensor = enable_nested_tensor
+        self.use_nested_tensor = enable_nested_tensor
+        self.mask_check = mask_check
+
+        enc_layer = "encoder_layer"
+        why_not_sparsity_fast_path = ""
+        if not isinstance(encoder_layer, torch.nn.TransformerEncoderLayer):
+            why_not_sparsity_fast_path = f"{enc_layer} was not TransformerEncoderLayer"
+        elif encoder_layer.norm_first:
+            why_not_sparsity_fast_path = f"{enc_layer}.norm_first was True"
+        elif not encoder_layer.self_attn.batch_first:
+            why_not_sparsity_fast_path = (
+                f"{enc_layer}.self_attn.batch_first was not True"
+                + "(use batch_first for better inference performance)"
+            )
+        elif not encoder_layer.self_attn._qkv_same_embed_dim:
+            why_not_sparsity_fast_path = (
+                f"{enc_layer}.self_attn._qkv_same_embed_dim was not True"
+            )
+        elif not encoder_layer.activation_relu_or_gelu:
+            why_not_sparsity_fast_path = (
+                f"{enc_layer}.activation_relu_or_gelu was not True"
+            )
+        elif not (encoder_layer.norm1.eps == encoder_layer.norm2.eps):
+            why_not_sparsity_fast_path = (
+                f"{enc_layer}.norm1.eps was not equal to {enc_layer}.norm2.eps"
+            )
+        elif encoder_nested_tensor and why_not_sparsity_fast_path:
+            warnings.warn(
+                f"enable_nested_tensor isi True, but self.use_nested_tensor is False because {why_not_sparsity_fast_path}"
+            )
+            self.use_nested_tensor = False
+    def forward(
+        self,
+        src:Tensor,
+        mask: Optional[Tensor] = None,
+        src_key_padding_mask: Optional[Tensor] = None,
+        is_causal: Optional[bool] = None,
+    ) -> Tensor:
+        src_key_padding_mask = F._canonical_mask(
+            mask=src_key_padding_mask,
+            mask_name="src_key_padding_mask",
+            other_type=F._none_or_dtype(mask),
+            other_name="mask",
+            target_type=src.dtype,
+        )
+
+        mask=F._canonical_mask(
+            mask=mask,
+            mask_name="mask",
+            other_type=None,
+            other_name="",
+            target_type=src.dtype,
+            check_other=False,
+        )
+
+        output = src
+        covert_to_nested=False
+        first_layer = self.layers[0]
+        src_key_padding_mask_for_layers = src_key_padding_mask
+        why_not_sparsity_fast_path = ""
+        str_first_layer = "self.layers[0]"
+
 class TransformerDecoder(Module):
     pass
 class TransformerEncoderLayer(Module):
